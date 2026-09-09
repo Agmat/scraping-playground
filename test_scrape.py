@@ -1,7 +1,7 @@
 """Assert-based self-check for scrape.py's parsing, against saved fixtures."""
 from scrapling.parser import Selector
 
-from scrape import parse_detail, parse_list, filter_is_electricity
+from scrape import DETAIL_URL, LIST_URL, parse_detail, parse_list
 
 
 def load(path: str) -> Selector:
@@ -36,13 +36,17 @@ def test_parse_list() -> None:
     assert total_pages == 25287
 
 
-def test_filter_is_electricity() -> None:
-    assert filter_is_electricity(load("fixtures/list_page.html")) is True
-    assert filter_is_electricity(load("fixtures/detail.html")) is False
+def test_urls_use_lifecycle_0() -> None:
+    # p_p_lifecycle=1 is Disallow'd by robots.txt; lifecycle=0 also skips the
+    # session cookie / redirect that the disallowed form requires.
+    assert "p_p_lifecycle=0" in DETAIL_URL
+    assert "p_p_lifecycle=0" in LIST_URL
+    assert "p_p_lifecycle=1" not in DETAIL_URL
+    assert "p_p_lifecycle=1" not in LIST_URL
 
 
 if __name__ == "__main__":
     test_parse_detail()
     test_parse_list()
-    test_filter_is_electricity()
+    test_urls_use_lifecycle_0()
     print("all tests passed")

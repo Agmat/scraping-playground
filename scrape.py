@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Scrape GPI TGE Urgent Market Messages (UMM), Electricity only, into SQLite.
+"""Scrape GPI TGE Urgent Market Messages (UMM) into SQLite.
+
+Crawls unfiltered rather than applying the site's ELECTRICITY filter: the
+filter is session-only state, but the site's shared nginx cache keys list
+pages by URL and ignores the session cookie, so a filtered crawl can be
+served a mix of filtered and unfiltered pages for the same URL with no way
+to detect or recover from it. Unfiltered removes the ambiguity; the cost is
+~49 non-electricity records out of 202k, which are still captured.
 
 Usage:
     uv run scrape.py                  # resume/continue the crawl
@@ -20,24 +27,19 @@ from datetime import datetime, timedelta, timezone
 from scrapling.fetchers import FetcherSession
 
 BASE = "https://gpi.tge.pl/en/wit"
+# lifecycle=0 (rather than =1) skips the redirect/cookie dance and is not
+# Disallow'd by robots.txt, unlike lifecycle=1.
 LIST_URL = (
-    f"{BASE}?p_p_id=witshortlistportlet_WAR_witportlet&p_p_lifecycle=1"
+    f"{BASE}?p_p_id=witshortlistportlet_WAR_witportlet&p_p_lifecycle=0"
     "&p_p_state=normal&p_p_mode=view&p_p_col_id=column-1&p_p_col_count=1"
     "&_witshortlistportlet_WAR_witportlet_action=filter-wit"
 )
 DETAIL_URL = (
-    f"{BASE}?p_p_id=witdisplayportlet_WAR_witportlet&p_p_lifecycle=1"
-    "&p_p_state=normal&p_p_mode=view&p_p_col_id=column-1&p_p_col_count=1"
+    f"{BASE}?p_p_id=witdisplayportlet_WAR_witportlet&p_p_lifecycle=0"
     "&_witdisplayportlet_WAR_witportlet_action=show-wit"
+    "&_witdisplayportlet_WAR_witportlet_implicitModel=true"
     "&_witdisplayportlet_WAR_witportlet_witid={witid}"
 )
-FILTER_DATA = {
-    "_witshortlistportlet_WAR_witportlet_witEventType": "",
-    "_witshortlistportlet_WAR_witportlet_witType": "ELECTRICITY",
-    "_witshortlistportlet_WAR_witportlet_powerStationIds": "0",
-    "_witshortlistportlet_WAR_witportlet_myWitOnly": "true",
-    "_witshortlistportlet_WAR_witportlet_onlyWithdrawnPublications": "false",
-}
 REQUEST_DELAY = 0.5
 
 # dt label -> snake_case key, with the site's own typos fixed.
@@ -158,11 +160,6 @@ def parse_list(page) -> tuple[list[int], int | None]:
     return ids, total_pages
 
 
-def filter_is_electricity(page) -> bool:
-    selected = page.css('select[name$="_witType"] option[selected]::attr(value)').get()
-    return selected == "ELECTRICITY"
-
-
 def parse_detail(page) -> dict | None:
     items = page.css("ul.witList > li")
     if not items:
@@ -192,12 +189,6 @@ def parse_detail(page) -> dict | None:
 
 # --- crawl ------------------------------------------------------------
 
-def apply_filter(session) -> None:
-    r = session.post(LIST_URL, data=FILTER_DATA)
-    if r.status != 200:
-        raise RuntimeError(f"filter POST failed: {r.status}")
-
-
 def fetch(session, method: str, url: str, attempts: int = 3, **kw):
     """GET/POST with a delay plus outer retry+backoff on top of the session's
     own retries, so a transient 5xx on a *list* page doesn't kill the whole
@@ -222,12 +213,7 @@ def fetch(session, method: str, url: str, attempts: int = 3, **kw):
 
 
 def fetch_list_page(session, page_num: int):
-    r = fetch(session, "get", f"{LIST_URL}&_witshortlistportlet_WAR_witportlet_page={page_num}")
-    if not filter_is_electricity(r):
-        log.warning("filter lost, re-applying")
-        apply_filter(session)
-        r = fetch(session, "get", f"{LIST_URL}&_witshortlistportlet_WAR_witportlet_page={page_num}")
-    return r
+    return fetch(session, "get", f"{LIST_URL}&_witshortlistportlet_WAR_witportlet_page={page_num}")
 
 
 class CutoffReached(Exception):
@@ -258,8 +244,6 @@ def crawl(conn: sqlite3.Connection, max_pages: int | None, since_days: int | Non
     cutoff = datetime.now() - timedelta(days=since_days) if since_days is not None else None
 
     with FetcherSession(impersonate="chrome", timeout=30, retries=3, retry_delay=2) as session:
-        apply_filter(session)
-
         backfill_done = get_meta(conn, "backfill_done") == "1"
         pages_done = 0
 
