@@ -6,11 +6,17 @@ trusted through its shared page cache) and sorts records into umm_<year>,
 umm_other (non-electricity notices) and umm_unknown (no usable date) tables at
 insert time.
 
+Detail-page fetches are always serialized (see the comment on `crawl()`): the
+site's detail portlet has an origin-side race under concurrent load that can
+return one in-flight request's content for a different, concurrently-requested
+witid, and the shared cache then serves that wrong response persistently.
+--concurrency only governs list-page fetching.
+
 Usage:
     uv run scrape.py                        # resume/continue the crawl
     uv run scrape.py --max-pages 2          # smoke test: only crawl 2 list pages
     uv run scrape.py --since-days 7         # stop once messages older than a week are reached
-    uv run scrape.py --concurrency 10       # more/fewer requests in flight
+    uv run scrape.py --concurrency 10       # more/fewer concurrent LIST-page requests
     uv run scrape.py --export               # dump export/umm_<year>.json etc from the database
 """
 from __future__ import annotations
@@ -368,16 +374,16 @@ async def gather_details(session, sem: asyncio.Semaphore, witids: list[int]):
     return out
 
 
-async def retry_failed(session, sem: asyncio.Semaphore, conn: sqlite3.Connection, concurrency: int, known: set[int]) -> None:
+async def retry_failed(session, detail_sem: asyncio.Semaphore, conn: sqlite3.Connection, batch_size: int, known: set[int]) -> None:
     retry_ids = failed_retry_ids(conn)
     if not retry_ids:
         return
     log.info("retrying %d previously failed witid(s)", len(retry_ids))
-    for i in range(0, len(retry_ids), concurrency):
+    for i in range(0, len(retry_ids), batch_size):
         if STOP:
             return
-        batch = retry_ids[i : i + concurrency]
-        results = await gather_details(session, sem, batch)
+        batch = retry_ids[i : i + batch_size]
+        results = await gather_details(session, detail_sem, batch)
         tagged = [(w, u, r, e, True) for w, u, r, e in results]
         commit_chunk(conn, tagged, chunk_end_page=None, cutoff=None)
         known.update(w for w, _, r, _, _ in tagged if r is not None)
@@ -386,11 +392,20 @@ async def retry_failed(session, sem: asyncio.Semaphore, conn: sqlite3.Connection
 async def crawl(conn: sqlite3.Connection, max_pages: int | None, since_days: int | None, concurrency: int) -> None:
     cutoff = datetime.now() - timedelta(days=since_days) if since_days is not None else None
     sem = asyncio.Semaphore(concurrency)
+    # ponytail: detail fetches are forced serial (concurrency 1), not tied to
+    # --concurrency. Confirmed live: concurrent requests to the same witdisplay
+    # portlet can return another in-flight request's content instead of their
+    # own (an origin-side race, not a client bug) - nginx then caches that wrong
+    # response under the requesting witid's own URL, so it isn't self-healing.
+    # List pages showed no such symptom and stay concurrent. Upgrade path: only
+    # loosen this if the site fixes the race, or a verification/re-fetch pass
+    # is added that can actually detect a wrong response and is worth the cost.
+    detail_sem = asyncio.Semaphore(1)
     chunk_pages = concurrency
 
     async with FetcherSession(impersonate="chrome", timeout=30, retries=3, retry_delay=2) as session:
         known = known_witids(conn)
-        await retry_failed(session, sem, conn, concurrency, known)
+        await retry_failed(session, detail_sem, conn, concurrency, known)
         if STOP:
             return
 
@@ -422,7 +437,7 @@ async def crawl(conn: sqlite3.Connection, max_pages: int | None, since_days: int
                     conn.commit()
 
                 new_ids = [i for i in all_ids if i not in known]
-                results = await gather_details(session, sem, new_ids)
+                results = await gather_details(session, detail_sem, new_ids)
                 tagged = [(w, u, r, e, False) for w, u, r, e in results]
                 cutoff_hit = commit_chunk(
                     conn, tagged, chunk_end_page=page_num + pages_this_chunk, cutoff=cutoff
@@ -457,7 +472,7 @@ async def crawl(conn: sqlite3.Connection, max_pages: int | None, since_days: int
                 if not new_ids:
                     log.info("incremental pages %s-%s: nothing new, stopping", pages[0], pages[-1])
                     break
-                results = await gather_details(session, sem, new_ids)
+                results = await gather_details(session, detail_sem, new_ids)
                 tagged = [(w, u, r, e, False) for w, u, r, e in results]
                 commit_chunk(conn, tagged, chunk_end_page=None, cutoff=cutoff)
                 known.update(w for w, _, r, _, _ in tagged if r is not None)
@@ -483,7 +498,7 @@ def main() -> None:
     parser.add_argument("--db", default="umm.sqlite")
     parser.add_argument("--max-pages", type=int, default=None, help="stop after N list pages (smoke test)")
     parser.add_argument("--since-days", type=int, default=None, help="stop once messages older than N days are reached")
-    parser.add_argument("--concurrency", type=int, default=5, help="max concurrent requests (default 5)")
+    parser.add_argument("--concurrency", type=int, default=5, help="max concurrent LIST-page requests (default 5); detail fetches are always serial")
     parser.add_argument("--export", nargs="?", const="export", default=None, metavar="DIR")
     args = parser.parse_args()
 
