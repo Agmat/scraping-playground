@@ -1,7 +1,14 @@
-"""Assert-based self-check for scrape.py's parsing, against saved fixtures."""
+"""Assert-based self-check for scrape.py's parsing and routing, against saved fixtures."""
 from scrapling.parser import Selector
 
-from scrape import DETAIL_URL, LIST_URL, parse_detail, parse_list
+from scrape import (
+    DETAIL_URL,
+    LIST_URL,
+    classify_record,
+    ensure_table,
+    parse_detail,
+    parse_list,
+)
 
 
 def load(path: str) -> Selector:
@@ -45,8 +52,36 @@ def test_urls_use_lifecycle_0() -> None:
     assert "p_p_lifecycle=1" not in LIST_URL
 
 
+def test_classify_record_routes_by_year() -> None:
+    record = parse_detail(load("fixtures/detail.html"))
+    assert record["published_at"].startswith("2026-")
+    assert classify_record(record) == "umm_2026"
+
+
+def test_classify_record_routes_other_and_unknown() -> None:
+    assert classify_record({"umm_type": None, "published_at": "2026-01-01 00:00:00"}) == "umm_other"
+    assert classify_record({"umm_type": "UMM Type: Generation", "published_at": None}) == "umm_unknown"
+    assert classify_record({"umm_type": "UMM Type: Generation", "published_at": "not-a-date"}) == "umm_unknown"
+
+
+def test_ensure_table_rejects_bad_year() -> None:
+    import sqlite3
+
+    conn = sqlite3.connect(":memory:")
+    ensure_table(conn, "umm_2026")  # fine
+    for bad in ["umm_2026; DROP TABLE meta;--", "umm_abcd", "umm_20266", "meta"]:
+        try:
+            ensure_table(conn, bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"expected ensure_table to reject {bad!r}")
+
+
 if __name__ == "__main__":
     test_parse_detail()
     test_parse_list()
     test_urls_use_lifecycle_0()
+    test_classify_record_routes_by_year()
+    test_classify_record_routes_other_and_unknown()
+    test_ensure_table_rejects_bad_year()
     print("all tests passed")

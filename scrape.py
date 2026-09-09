@@ -1,23 +1,17 @@
 #!/usr/bin/env python3
-"""Scrape GPI TGE Urgent Market Messages (UMM) into SQLite.
+"""Scrape GPI TGE Urgent Market Messages (UMM) into SQLite, one table per year.
 
-Crawls unfiltered rather than applying the site's ELECTRICITY filter: the
-filter is session-only state, but the site's shared nginx cache keys list
-pages by URL and ignores the session cookie, so a filtered crawl can be
-served a mix of filtered and unfiltered pages for the same URL with no way
-to detect or recover from it. Unfiltered removes the ambiguity; the cost is
-~49 non-electricity records out of 202k, which are still captured.
-
-Fetches concurrently in chunks of list pages; each chunk commits atomically
-(rows + resume cursor together), so an interruption at any point costs at
-most one chunk and never leaves a half-written page behind.
+Crawls unfiltered (see plan notes on why the site's ELECTRICITY filter can't be
+trusted through its shared page cache) and sorts records into umm_<year>,
+umm_other (non-electricity notices) and umm_unknown (no usable date) tables at
+insert time.
 
 Usage:
     uv run scrape.py                        # resume/continue the crawl
     uv run scrape.py --max-pages 2          # smoke test: only crawl 2 list pages
     uv run scrape.py --since-days 7         # stop once messages older than a week are reached
     uv run scrape.py --concurrency 10       # more/fewer requests in flight
-    uv run scrape.py --export               # dump umm.json from the database
+    uv run scrape.py --export               # dump export/umm_<year>.json etc from the database
 """
 from __future__ import annotations
 
@@ -29,6 +23,7 @@ import re
 import signal
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from scrapling.fetchers import FetcherSession
 
@@ -74,6 +69,18 @@ LABELS = {
 }
 INTERVAL_KEYS = {"interval_start", "interval_end", "unavailable_capacity", "available_capacity"}
 
+RECORD_COLUMNS = "witid, message_id, published_at, umm_type, title, data, url, scraped_at"
+RECORD_TABLE_SCHEMA = """(
+    witid INTEGER PRIMARY KEY,
+    message_id TEXT,
+    published_at TEXT,
+    umm_type TEXT,
+    title TEXT,
+    data TEXT,
+    url TEXT,
+    scraped_at TEXT
+)"""
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("scrape")
 
@@ -108,18 +115,11 @@ def open_db(path: str) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute(
-        """CREATE TABLE IF NOT EXISTS umm (
-            witid INTEGER PRIMARY KEY,
-            message_id TEXT,
-            published_at TEXT,
-            umm_type TEXT,
-            title TEXT,
-            data TEXT,
-            url TEXT,
-            scraped_at TEXT,
-            error TEXT
-        )"""
+        "CREATE TABLE IF NOT EXISTS umm_failed ("
+        "witid INTEGER PRIMARY KEY, url TEXT, error TEXT, scraped_at TEXT)"
     )
+    conn.execute(f"CREATE TABLE IF NOT EXISTS umm_other {RECORD_TABLE_SCHEMA}")
+    conn.execute(f"CREATE TABLE IF NOT EXISTS umm_unknown {RECORD_TABLE_SCHEMA}")
     conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
     conn.commit()
     return conn
@@ -134,69 +134,119 @@ def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
     conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value))
 
 
+def classify_record(record: dict) -> str:
+    """Which table a parsed record routes to: umm_<year>, umm_other, or umm_unknown."""
+    if record.get("umm_type") is None:
+        return "umm_other"
+    m = re.match(r"^(\d{4})-", record.get("published_at") or "")
+    if not m or not (2000 <= int(m.group(1)) <= 2100):
+        return "umm_unknown"
+    return f"umm_{m.group(1)}"
+
+
+def ensure_table(conn: sqlite3.Connection, table: str) -> None:
+    """Create a record table if needed. Re-validates the name even though
+    classify_record already did — table names can't be bound as SQL
+    parameters, so nothing gets interpolated here without a second check."""
+    if table in ("umm_other", "umm_unknown"):
+        return
+    m = re.fullmatch(r"umm_(\d{4})", table)
+    if not m or not (2000 <= int(m.group(1)) <= 2100):
+        raise ValueError(f"refusing to create table with unexpected name: {table!r}")
+    conn.execute(f"CREATE TABLE IF NOT EXISTS {table} {RECORD_TABLE_SCHEMA}")
+
+
+def all_record_tables(conn: sqlite3.Connection) -> list[str]:
+    names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    return sorted(t for t in names if t in ("umm_other", "umm_unknown") or re.fullmatch(r"umm_\d{4}", t))
+
+
 def known_witids(conn: sqlite3.Connection) -> set[int]:
-    """Witids that don't need fetching again: successes, plus permanent
-    failures (a witid that genuinely has no detail page). Transient
-    failures (network errors, 5xx) are deliberately excluded so they get
-    retried rather than silently treated as done forever."""
-    return {
-        row[0]
-        for row in conn.execute("SELECT witid FROM umm WHERE error IS NULL OR error = 'no details'")
-    }
+    ids: set[int] = set()
+    for table in all_record_tables(conn):
+        ids.update(row[0] for row in conn.execute(f"SELECT witid FROM {table}"))
+    ids.update(
+        row[0] for row in conn.execute("SELECT witid FROM umm_failed WHERE error = 'no details'")
+    )
+    return ids
 
 
 def failed_retry_ids(conn: sqlite3.Connection) -> list[int]:
-    return [
-        row[0]
-        for row in conn.execute("SELECT witid FROM umm WHERE error IS NOT NULL AND error <> 'no details'")
-    ]
+    """Witids that failed for a retryable (non-permanent) reason."""
+    return [row[0] for row in conn.execute("SELECT witid FROM umm_failed WHERE error <> 'no details'")]
+
+
+def refresh_umm_view(conn: sqlite3.Connection) -> None:
+    tables = all_record_tables(conn)
+    conn.execute("DROP VIEW IF EXISTS umm")
+    if tables:
+        union = " UNION ALL ".join(f"SELECT * FROM {t}" for t in tables)
+        conn.execute(f"CREATE VIEW umm AS {union}")
 
 
 def commit_chunk(
     conn: sqlite3.Connection,
-    results: list[tuple[int, str, dict | None, str | None]],
+    results: list[tuple[int, str, dict | None, str | None, bool]],
     chunk_end_page: int | None,
     cutoff: datetime | None,
 ) -> bool:
     """Insert a chunk's worth of scrape results in one transaction.
 
+    results: (witid, url, record, error, from_failed_retry) tuples.
     chunk_end_page: next_page value to persist, or None to leave it alone
         (incremental mode never tracks it; backfill leaves it alone when the
         cutoff was hit, so a later full run resumes at the same page and
         keeps going past where this run chose to stop).
     Returns True if any record in this chunk was older than the cutoff.
     """
-    rows = []
+    rows_by_table: dict[str, list[tuple]] = {}
+    failed_rows: list[tuple] = []
+    resolved_from_failed: list[int] = []
     cutoff_hit = False
     now = datetime.now(timezone.utc).isoformat()
 
-    for witid, url, record, error in results:
-        rows.append((
-            witid,
-            (record or {}).get("message_id"),
-            (record or {}).get("published_at"),
-            (record or {}).get("umm_type"),
-            (record or {}).get("title"),
-            json.dumps(record, ensure_ascii=False) if record else None,
-            url,
-            now,
-            error,
-        ))
-        if cutoff is not None and record and record.get("published_at"):
-            try:
-                published = datetime.strptime(record["published_at"], "%Y-%m-%d %H:%M:%S")
-            except ValueError:
-                published = None
-            if published is not None and published < cutoff:
-                cutoff_hit = True
+    for witid, url, record, error, from_failed in results:
+        if record is not None:
+            table = classify_record(record)
+            ensure_table(conn, table)
+            rows_by_table.setdefault(table, []).append((
+                witid,
+                record.get("message_id"),
+                record.get("published_at"),
+                record.get("umm_type"),
+                record.get("title"),
+                json.dumps(record, ensure_ascii=False),
+                url,
+                now,
+            ))
+            if from_failed:
+                resolved_from_failed.append(witid)
+            if cutoff is not None and record.get("published_at"):
+                try:
+                    published = datetime.strptime(record["published_at"], "%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    published = None
+                if published is not None and published < cutoff:
+                    cutoff_hit = True
+        else:
+            failed_rows.append((witid, url, error, now))
 
-    # OR REPLACE (not IGNORE): a witid retried out of the failed set must be
-    # able to overwrite its old error row once it succeeds.
-    conn.executemany(
-        "INSERT OR REPLACE INTO umm (witid, message_id, published_at, umm_type, title, data, url, scraped_at, error) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        rows,
-    )
+    for table, rows in rows_by_table.items():
+        conn.executemany(
+            f"INSERT OR IGNORE INTO {table} ({RECORD_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+    if failed_rows:
+        conn.executemany(
+            "INSERT OR REPLACE INTO umm_failed (witid, url, error, scraped_at) VALUES (?, ?, ?, ?)",
+            failed_rows,
+        )
+    if resolved_from_failed:
+        conn.executemany(
+            "DELETE FROM umm_failed WHERE witid = ?", [(w,) for w in resolved_from_failed]
+        )
+    if rows_by_table:
+        refresh_umm_view(conn)
     if chunk_end_page is not None and not cutoff_hit:
         set_meta(conn, "next_page", str(chunk_end_page))
     conn.commit()
@@ -328,8 +378,9 @@ async def retry_failed(session, sem: asyncio.Semaphore, conn: sqlite3.Connection
             return
         batch = retry_ids[i : i + concurrency]
         results = await gather_details(session, sem, batch)
-        commit_chunk(conn, results, chunk_end_page=None, cutoff=None)
-        known.update(w for w, _, r, _ in results if r is not None)
+        tagged = [(w, u, r, e, True) for w, u, r, e in results]
+        commit_chunk(conn, tagged, chunk_end_page=None, cutoff=None)
+        known.update(w for w, _, r, _, _ in tagged if r is not None)
 
 
 async def crawl(conn: sqlite3.Connection, max_pages: int | None, since_days: int | None, concurrency: int) -> None:
@@ -372,10 +423,11 @@ async def crawl(conn: sqlite3.Connection, max_pages: int | None, since_days: int
 
                 new_ids = [i for i in all_ids if i not in known]
                 results = await gather_details(session, sem, new_ids)
+                tagged = [(w, u, r, e, False) for w, u, r, e in results]
                 cutoff_hit = commit_chunk(
-                    conn, results, chunk_end_page=page_num + pages_this_chunk, cutoff=cutoff
+                    conn, tagged, chunk_end_page=page_num + pages_this_chunk, cutoff=cutoff
                 )
-                known.update(w for w, _, r, _ in results if r is not None)
+                known.update(w for w, _, r, _, _ in tagged if r is not None)
 
                 log.info(
                     "backfill pages %s-%s/%s: %d new, %d skipped",
@@ -406,21 +458,24 @@ async def crawl(conn: sqlite3.Connection, max_pages: int | None, since_days: int
                     log.info("incremental pages %s-%s: nothing new, stopping", pages[0], pages[-1])
                     break
                 results = await gather_details(session, sem, new_ids)
-                commit_chunk(conn, results, chunk_end_page=None, cutoff=cutoff)
-                known.update(w for w, _, r, _ in results if r is not None)
+                tagged = [(w, u, r, e, False) for w, u, r, e in results]
+                commit_chunk(conn, tagged, chunk_end_page=None, cutoff=cutoff)
+                known.update(w for w, _, r, _, _ in tagged if r is not None)
                 log.info("incremental pages %s-%s: %d new", pages[0], pages[-1], len(new_ids))
                 pages_done += chunk_pages
                 page_num += chunk_pages
 
 
-def export(conn: sqlite3.Connection, path: str) -> None:
-    rows = conn.execute(
-        "SELECT data FROM umm WHERE data IS NOT NULL ORDER BY witid"
-    ).fetchall()
-    records = [json.loads(row[0]) for row in rows]
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(records, f, ensure_ascii=False, indent=2)
-    log.info("exported %d records to %s", len(records), path)
+def export(conn: sqlite3.Connection, out_dir: str) -> None:
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    for table in all_record_tables(conn):
+        rows = conn.execute(f"SELECT data FROM {table} WHERE data IS NOT NULL ORDER BY witid").fetchall()
+        records = [json.loads(row[0]) for row in rows]
+        path = out / f"{table}.json"
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(records, f, ensure_ascii=False, indent=2)
+        log.info("exported %d records to %s", len(records), path)
 
 
 def main() -> None:
@@ -429,7 +484,7 @@ def main() -> None:
     parser.add_argument("--max-pages", type=int, default=None, help="stop after N list pages (smoke test)")
     parser.add_argument("--since-days", type=int, default=None, help="stop once messages older than N days are reached")
     parser.add_argument("--concurrency", type=int, default=5, help="max concurrent requests (default 5)")
-    parser.add_argument("--export", nargs="?", const="umm.json", default=None, metavar="PATH")
+    parser.add_argument("--export", nargs="?", const="export", default=None, metavar="DIR")
     args = parser.parse_args()
 
     conn = open_db(args.db)
