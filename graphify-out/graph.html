@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>graphify - graphify-out/graph.html</title>
+<script src="https://unpkg.com/vis-network@9.1.6/standalone/umd/vis-network.min.js"
+        integrity="sha384-Ux6phic9PEHJ38YtrijhkzyJ8yQlH8i/+buBR8s3mAZOJrP1gwyvAcIYl3GWtpX1"
+        crossorigin="anonymous"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0f0f1a; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; display: flex; height: 100vh; overflow: hidden; }
+  #graph { flex: 1; }
+  #sidebar { width: 280px; background: #1a1a2e; border-left: 1px solid #2a2a4e; display: flex; flex-direction: column; overflow: hidden; }
+  #search-wrap { padding: 12px; border-bottom: 1px solid #2a2a4e; }
+  #search { width: 100%; background: #0f0f1a; border: 1px solid #3a3a5e; color: #e0e0e0; padding: 7px 10px; border-radius: 6px; font-size: 13px; outline: none; }
+  #search:focus { border-color: #4E79A7; }
+  #search-results { max-height: 140px; overflow-y: auto; padding: 4px 12px; border-bottom: 1px solid #2a2a4e; display: none; }
+  .search-item { padding: 4px 6px; cursor: pointer; border-radius: 4px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .search-item:hover { background: #2a2a4e; }
+  #info-panel { padding: 14px; border-bottom: 1px solid #2a2a4e; min-height: 140px; }
+  #info-panel h3 { font-size: 13px; color: #aaa; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.05em; }
+  #info-content { font-size: 13px; color: #ccc; line-height: 1.6; }
+  #info-content .field { margin-bottom: 5px; }
+  #info-content .field b { color: #e0e0e0; }
+  #info-content .empty { color: #555; font-style: italic; }
+  .neighbor-link { display: block; padding: 2px 6px; margin: 2px 0; border-radius: 3px; cursor: pointer; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-left: 3px solid #333; }
+  .neighbor-link:hover { background: #2a2a4e; }
+  #neighbors-list { max-height: 160px; overflow-y: auto; margin-top: 4px; }
+  #legend-wrap { flex: 1; overflow-y: auto; padding: 12px; }
+  #legend-wrap h3 { font-size: 13px; color: #aaa; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .legend-item { display: flex; align-items: center; gap: 8px; padding: 4px 0; cursor: pointer; border-radius: 4px; font-size: 12px; }
+  .legend-item:hover { background: #2a2a4e; padding-left: 4px; }
+  .legend-item.dimmed { opacity: 0.35; }
+  .legend-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+  .legend-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .legend-count { color: #666; font-size: 11px; }
+  #stats { padding: 10px 14px; border-top: 1px solid #2a2a4e; font-size: 11px; color: #555; }
+  #legend-controls { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; padding: 4px 0; }
+  #legend-controls label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; color: #aaa; user-select: none; }
+  #legend-controls label:hover { color: #e0e0e0; }
+  .legend-cb, #select-all-cb { appearance: none; -webkit-appearance: none; width: 14px; height: 14px; border: 1.5px solid #3a3a5e; border-radius: 3px; background: #0f0f1a; cursor: pointer; position: relative; flex-shrink: 0; }
+  .legend-cb:checked, #select-all-cb:checked { background: #4E79A7; border-color: #4E79A7; }
+  .legend-cb:checked::after, #select-all-cb:checked::after { content: ''; position: absolute; left: 3.5px; top: 1px; width: 4px; height: 7px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
+  #select-all-cb:indeterminate { background: #4E79A7; border-color: #4E79A7; }
+  #select-all-cb:indeterminate::after { content: ''; position: absolute; left: 2px; top: 5px; width: 8px; height: 2px; background: #fff; border: none; transform: none; }
+</style>
+</head>
+<body>
+<div id="graph"></div>
+<div id="sidebar">
+  <div id="search-wrap">
+    <input id="search" type="text" placeholder="Search nodes..." autocomplete="off">
+    <div id="search-results"></div>
+  </div>
+  <div id="info-panel">
+    <h3>Node Info</h3>
+    <div id="info-content"><span class="empty">Click a node to inspect it</span></div>
+  </div>
+  <div id="legend-wrap">
+    <h3>Communities</h3>
+    <div id="legend-controls">
+      <label><input type="checkbox" id="select-all-cb" checked onchange="toggleAllCommunities(!this.checked)">Select All</label>
+    </div>
+    <div id="legend"></div>
+  </div>
+  <div id="stats">64 nodes &middot; 119 edges &middot; 10 communities</div>
+</div>
+<script>
+const RAW_NODES = [{"id": "scrape_classify_record", "label": "classify_record()", "color": {"background": "#4E79A7", "border": "#4E79A7", "highlight": {"background": "#ffffff", "border": "#4E79A7"}}, "size": 16.7, "font": {"size": 12, "color": "#ffffff"}, "title": "classify_record()", "community": 0, "community_name": "Parsing & Table Routing", "source_file": "scrape.py", "file_type": "code", "degree": 6}, {"id": "scrape_clean", "label": "clean()", "color": {"background": "#4E79A7", "border": "#4E79A7", "highlight": {"background": "#ffffff", "border": "#4E79A7"}}, "size": 12.2, "font": {"size": 0, "color": "#ffffff"}, "title": "clean()", "community": 0, "community_name": "Parsing & Table Routing", "source_file": "scrape.py", "file_type": "code", "degree": 2}, {"id": "scrape_ensure_table", "label": "ensure_table()", "color": {"background": "#4E79A7", "border": "#4E79A7", "highlight": {"background": "#ffffff", "border": "#4E79A7"}}, "size": 16.7, "font": {"size": 12, "color": "#ffffff"}, "title": "ensure_table()", "community": 0, "community_name": "Parsing & Table Routing", "source_file": "scrape.py", "file_type": "code", "degree": 6}, {"id": "scrape_parse_detail", "label": "parse_detail()", "color": {"background": "#4E79A7", "border": "#4E79A7", "highlight": {"background": "#ffffff", "border": "#4E79A7"}}, "size": 17.8, "font": {"size": 12, "color": "#ffffff"}, "title": "parse_detail()", "community": 0, "community_name": "Parsing & Table Routing", "source_file": "scrape.py", "file_type": "code", "degree": 7}, {"id": "test_scrape_load", "label": "load()", "color": {"background": "#4E79A7", "border": "#4E79A7", "highlight": {"background": "#ffffff", "border": "#4E79A7"}}, "size": 15.6, "font": {"size": 12, "color": "#ffffff"}, "title": "load()", "community": 0, "community_name": "Parsing & Table Routing", "source_file": "test_scrape.py", "file_type": "code", "degree": 5}, {"id": "test_scrape_test_classify_record_routes_by_year", "label": "test_classify_record_routes_by_year()", "color": {"background": "#4E79A7", "border": "#4E79A7", "highlight": {"background": "#ffffff", "border": "#4E79A7"}}, "size": 14.4, "font": {"size": 0, "color": "#ffffff"}, "title": "test_classify_record_routes_by_year()", "community": 0, "community_name": "Parsing & Table Routing", "source_file": "test_scrape.py", "file_type": "code", "degree": 4}, {"id": "test_scrape_test_classify_record_routes_other_and_unknown", "label": "test_classify_record_routes_other_and_unknown()", "color": {"background": "#4E79A7", "border": "#4E79A7", "highlight": {"background": "#ffffff", "border": "#4E79A7"}}, "size": 12.2, "font": {"size": 0, "color": "#ffffff"}, "title": "test_classify_record_routes_other_and_unknown()", "community": 0, "community_name": "Parsing & Table Routing", "source_file": "test_scrape.py", "file_type": "code", "degree": 2}, {"id": "test_scrape_test_ensure_table_rejects_bad_year", "label": "test_ensure_table_rejects_bad_year()", "color": {"background": "#4E79A7", "border": "#4E79A7", "highlight": {"background": "#ffffff", "border": "#4E79A7"}}, "size": 12.2, "font": {"size": 0, "color": "#ffffff"}, "title": "test_ensure_table_rejects_bad_year()", "community": 0, "community_name": "Parsing & Table Routing", "source_file": "test_scrape.py", "file_type": "code", "degree": 2}, {"id": "test_scrape_test_parse_detail", "label": "test_parse_detail()", "color": {"background": "#4E79A7", "border": "#4E79A7", "highlight": {"background": "#ffffff", "border": "#4E79A7"}}, "size": 13.3, "font": {"size": 0, "color": "#ffffff"}, "title": "test_parse_detail()", "community": 0, "community_name": "Parsing & Table Routing", "source_file": "test_scrape.py", "file_type": "code", "degree": 3}, {"id": "test_scrape_test_parse_list", "label": "test_parse_list()", "color": {"background": "#4E79A7", "border": "#4E79A7", "highlight": {"background": "#ffffff", "border": "#4E79A7"}}, "size": 13.3, "font": {"size": 0, "color": "#ffffff"}, "title": "test_parse_list()", "community": 0, "community_name": "Parsing & Table Routing", "source_file": "test_scrape.py", "file_type": "code", "degree": 3}, {"id": "test_scrape_test_urls_use_lifecycle_0", "label": "test_urls_use_lifecycle_0()", "color": {"background": "#4E79A7", "border": "#4E79A7", "highlight": {"background": "#ffffff", "border": "#4E79A7"}}, "size": 11.1, "font": {"size": 0, "color": "#ffffff"}, "title": "test_urls_use_lifecycle_0()", "community": 0, "community_name": "Parsing & Table Routing", "source_file": "test_scrape.py", "file_type": "code", "degree": 1}, {"id": "scrape_all_record_tables", "label": "all_record_tables()", "color": {"background": "#F28E2B", "border": "#F28E2B", "highlight": {"background": "#ffffff", "border": "#F28E2B"}}, "size": 15.6, "font": {"size": 12, "color": "#ffffff"}, "title": "all_record_tables()", "community": 1, "community_name": "Database & Crawl Orchestration", "source_file": "scrape.py", "file_type": "code", "degree": 5}, {"id": "scrape_commit_chunk", "label": "commit_chunk()", "color": {"background": "#F28E2B", "border": "#F28E2B", "highlight": {"background": "#ffffff", "border": "#F28E2B"}}, "size": 21.1, "font": {"size": 12, "color": "#ffffff"}, "title": "commit_chunk()", "community": 1, "community_name": "Database & Crawl Orchestration", "source_file": "scrape.py", "file_type": "code", "degree": 10}, {"id": "scrape_crawl", "label": "crawl()", "color": {"background": "#F28E2B", "border": "#F28E2B", "highlight": {"background": "#ffffff", "border": "#F28E2B"}}, "size": 21.1, "font": {"size": 12, "color": "#ffffff"}, "title": "crawl()", "community": 1, "community_name": "Database & Crawl Orchestration", "source_file": "scrape.py", "file_type": "code", "degree": 10}, {"id": "scrape_export", "label": "export()", "color": {"background": "#F28E2B", "border": "#F28E2B", "highlight": {"background": "#ffffff", "border": "#F28E2B"}}, "size": 14.4, "font": {"size": 0, "color": "#ffffff"}, "title": "export()", "community": 1, "community_name": "Database & Crawl Orchestration", "source_file": "scrape.py", "file_type": "code", "degree": 4}, {"id": "scrape_get_meta", "label": "get_meta()", "color": {"background": "#F28E2B", "border": "#F28E2B", "highlight": {"background": "#ffffff", "border": "#F28E2B"}}, "size": 13.3, "font": {"size": 0, "color": "#ffffff"}, "title": "get_meta()", "community": 1, "community_name": "Database & Crawl Orchestration", "source_file": "scrape.py", "file_type": "code", "degree": 3}, {"id": "scrape_handle_signal", "label": "_handle_signal()", "color": {"background": "#F28E2B", "border": "#F28E2B", "highlight": {"background": "#ffffff", "border": "#F28E2B"}}, "size": 12.2, "font": {"size": 0, "color": "#ffffff"}, "title": "_handle_signal()", "community": 1, "community_name": "Database & Crawl Orchestration", "source_file": "scrape.py", "file_type": "code", "degree": 2}, {"id": "scrape_known_witids", "label": "known_witids()", "color": {"background": "#F28E2B", "border": "#F28E2B", "highlight": {"background": "#ffffff", "border": "#F28E2B"}}, "size": 14.4, "font": {"size": 0, "color": "#ffffff"}, "title": "known_witids()", "community": 1, "community_name": "Database & Crawl Orchestration", "source_file": "scrape.py", "file_type": "code", "degree": 4}, {"id": "scrape_main", "label": "main()", "color": {"background": "#F28E2B", "border": "#F28E2B", "highlight": {"background": "#ffffff", "border": "#F28E2B"}}, "size": 15.6, "font": {"size": 12, "color": "#ffffff"}, "title": "main()", "community": 1, "community_name": "Database & Crawl Orchestration", "source_file": "scrape.py", "file_type": "code", "degree": 5}, {"id": "scrape_open_db", "label": "open_db()", "color": {"background": "#F28E2B", "border": "#F28E2B", "highlight": {"background": "#ffffff", "border": "#F28E2B"}}, "size": 13.3, "font": {"size": 0, "color": "#ffffff"}, "title": "open_db()", "community": 1, "community_name": "Database & Crawl Orchestration", "source_file": "scrape.py", "file_type": "code", "degree": 3}, {"id": "scrape_refresh_umm_view", "label": "refresh_umm_view()", "color": {"background": "#F28E2B", "border": "#F28E2B", "highlight": {"background": "#ffffff", "border": "#F28E2B"}}, "size": 14.4, "font": {"size": 0, "color": "#ffffff"}, "title": "refresh_umm_view()", "community": 1, "community_name": "Database & Crawl Orchestration", "source_file": "scrape.py", "file_type": "code", "degree": 4}, {"id": "scrape_set_meta", "label": "set_meta()", "color": {"background": "#F28E2B", "border": "#F28E2B", "highlight": {"background": "#ffffff", "border": "#F28E2B"}}, "size": 14.4, "font": {"size": 0, "color": "#ffffff"}, "title": "set_meta()", "community": 1, "community_name": "Database & Crawl Orchestration", "source_file": "scrape.py", "file_type": "code", "degree": 4}, {"id": "scrape_failed_retry_ids", "label": "failed_retry_ids()", "color": {"background": "#E15759", "border": "#E15759", "highlight": {"background": "#ffffff", "border": "#E15759"}}, "size": 14.4, "font": {"size": 0, "color": "#ffffff"}, "title": "failed_retry_ids()", "community": 2, "community_name": "Async Fetching & Retry", "source_file": "scrape.py", "file_type": "code", "degree": 4}, {"id": "scrape_fetch", "label": "fetch()", "color": {"background": "#E15759", "border": "#E15759", "highlight": {"background": "#ffffff", "border": "#E15759"}}, "size": 14.4, "font": {"size": 0, "color": "#ffffff"}, "title": "fetch()", "community": 2, "community_name": "Async Fetching & Retry", "source_file": "scrape.py", "file_type": "code", "degree": 4}, {"id": "scrape_fetch_list_page", "label": "fetch_list_page()", "color": {"background": "#E15759", "border": "#E15759", "highlight": {"background": "#ffffff", "border": "#E15759"}}, "size": 14.4, "font": {"size": 0, "color": "#ffffff"}, "title": "fetch_list_page()", "community": 2, "community_name": "Async Fetching & Retry", "source_file": "scrape.py", "file_type": "code", "degree": 4}, {"id": "scrape_gather_details", "label": "gather_details()", "color": {"background": "#E15759", "border": "#E15759", "highlight": {"background": "#ffffff", "border": "#E15759"}}, "size": 15.6, "font": {"size": 12, "color": "#ffffff"}, "title": "gather_details()", "community": 2, "community_name": "Async Fetching & Retry", "source_file": "scrape.py", "file_type": "code", "degree": 5}, {"id": "scrape_gather_list_pages", "label": "gather_list_pages()", "color": {"background": "#E15759", "border": "#E15759", "highlight": {"background": "#ffffff", "border": "#E15759"}}, "size": 15.6, "font": {"size": 12, "color": "#ffffff"}, "title": "gather_list_pages()", "community": 2, "community_name": "Async Fetching & Retry", "source_file": "scrape.py", "file_type": "code", "degree": 5}, {"id": "scrape_parse_list", "label": "parse_list()", "color": {"background": "#E15759", "border": "#E15759", "highlight": {"background": "#ffffff", "border": "#E15759"}}, "size": 15.6, "font": {"size": 12, "color": "#ffffff"}, "title": "parse_list()", "community": 2, "community_name": "Async Fetching & Retry", "source_file": "scrape.py", "file_type": "code", "degree": 5}, {"id": "scrape_retry_failed", "label": "retry_failed()", "color": {"background": "#E15759", "border": "#E15759", "highlight": {"background": "#ffffff", "border": "#E15759"}}, "size": 17.8, "font": {"size": 12, "color": "#ffffff"}, "title": "retry_failed()", "community": 2, "community_name": "Async Fetching & Retry", "source_file": "scrape.py", "file_type": "code", "degree": 7}, {"id": "scrape_scrape_detail", "label": "scrape_detail()", "color": {"background": "#E15759", "border": "#E15759", "highlight": {"background": "#ffffff", "border": "#E15759"}}, "size": 15.6, "font": {"size": 12, "color": "#ffffff"}, "title": "scrape_detail()", "community": 2, "community_name": "Async Fetching & Retry", "source_file": "scrape.py", "file_type": "code", "degree": 5}, {"id": "scrape_label_to_key", "label": "label_to_key()", "color": {"background": "#FF9DA7", "border": "#FF9DA7", "highlight": {"background": "#ffffff", "border": "#FF9DA7"}}, "size": 13.3, "font": {"size": 0, "color": "#ffffff"}, "title": "label_to_key()", "community": 7, "community_name": "Slug/Key Helpers", "source_file": "scrape.py", "file_type": "code", "degree": 3}, {"id": "scrape_slugify", "label": "slugify()", "color": {"background": "#FF9DA7", "border": "#FF9DA7", "highlight": {"background": "#ffffff", "border": "#FF9DA7"}}, "size": 12.2, "font": {"size": 0, "color": "#ffffff"}, "title": "slugify()", "community": 7, "community_name": "Slug/Key Helpers", "source_file": "scrape.py", "file_type": "code", "degree": 2}, {"id": "selector", "label": "Selector", "color": {"background": "#4E79A7", "border": "#4E79A7", "highlight": {"background": "#ffffff", "border": "#4E79A7"}}, "size": 11.1, "font": {"size": 0, "color": "#ffffff"}, "title": "Selector", "community": 0, "community_name": "Parsing & Table Routing", "source_file": "", "file_type": "code", "degree": 1}, {"id": "test_scrape", "label": "test_scrape.py", "color": {"background": "#4E79A7", "border": "#4E79A7", "highlight": {"background": "#ffffff", "border": "#4E79A7"}}, "size": 24.4, "font": {"size": 12, "color": "#ffffff"}, "title": "test_scrape.py", "community": 0, "community_name": "Parsing & Table Routing", "source_file": "test_scrape.py", "file_type": "code", "degree": 13}, {"id": "scrape_rationale_138", "label": "Which table a parsed record routes to: umm_<year>, umm_other, or umm_unknown.", "color": {"background": "#4E79A7", "border": "#4E79A7", "highlight": {"background": "#ffffff", "border": "#4E79A7"}}, "size": 11.1, "font": {"size": 0, "color": "#ffffff"}, "title": "Which table a parsed record routes to: umm_&lt;year&gt;, umm_other, or umm_unknown.", "community": 0, "community_name": "Parsing & Table Routing", "source_file": "scrape.py", "file_type": "rationale", "degree": 1}, {"id": "scrape_rationale_148", "label": "Create a record table if needed. Re-validates the name even though\u2026", "color": {"background": "#4E79A7", "border": "#4E79A7", "highlight": {"background": "#ffffff", "border": "#4E79A7"}}, "size": 11.1, "font": {"size": 0, "color": "#ffffff"}, "title": "Create a record table if needed. Re-validates the name even though\u2026", "community": 0, "community_name": "Parsing & Table Routing", "source_file": "scrape.py", "file_type": "rationale", "degree": 1}, {"id": "test_scrape_rationale_1", "label": "Assert-based self-check for scrape.py's parsing and routing, against saved\u2026", "color": {"background": "#4E79A7", "border": "#4E79A7", "highlight": {"background": "#ffffff", "border": "#4E79A7"}}, "size": 11.1, "font": {"size": 0, "color": "#ffffff"}, "title": "Assert-based self-check for scrape.py&#x27;s parsing and routing, against saved\u2026", "community": 0, "community_name": "Parsing & Table Routing", "source_file": "test_scrape.py", "file_type": "rationale", "degree": 1}, {"id": "connection", "label": "Connection", "color": {"background": "#F28E2B", "border": "#F28E2B", "highlight": {"background": "#ffffff", "border": "#F28E2B"}}, "size": 23.3, "font": {"size": 12, "color": "#ffffff"}, "title": "Connection", "community": 1, "community_name": "Database & Crawl Orchestration", "source_file": "", "file_type": "code", "degree": 12}, {"id": "datetime", "label": "datetime", "color": {"background": "#F28E2B", "border": "#F28E2B", "highlight": {"background": "#ffffff", "border": "#F28E2B"}}, "size": 12.2, "font": {"size": 0, "color": "#ffffff"}, "title": "datetime", "community": 1, "community_name": "Database & Crawl Orchestration", "source_file": "", "file_type": "code", "degree": 2}, {"id": "scrape", "label": "scrape.py", "color": {"background": "#F28E2B", "border": "#F28E2B", "highlight": {"background": "#ffffff", "border": "#F28E2B"}}, "size": 40.0, "font": {"size": 12, "color": "#ffffff"}, "title": "scrape.py", "community": 1, "community_name": "Database & Crawl Orchestration", "source_file": "scrape.py", "file_type": "code", "degree": 27}, {"id": "scrape_rationale_193", "label": "Insert a chunk's worth of scrape results in one transaction. results: (witid,\u2026", "color": {"background": "#F28E2B", "border": "#F28E2B", "highlight": {"background": "#ffffff", "border": "#F28E2B"}}, "size": 11.1, "font": {"size": 0, "color": "#ffffff"}, "title": "Insert a chunk&#x27;s worth of scrape results in one transaction. results: (witid,\u2026", "community": 1, "community_name": "Database & Crawl Orchestration", "source_file": "scrape.py", "file_type": "rationale", "degree": 1}, {"id": "semaphore", "label": "Semaphore", "color": {"background": "#E15759", "border": "#E15759", "highlight": {"background": "#ffffff", "border": "#E15759"}}, "size": 15.6, "font": {"size": 12, "color": "#ffffff"}, "title": "Semaphore", "community": 2, "community_name": "Async Fetching & Retry", "source_file": "", "file_type": "code", "degree": 5}, {"id": "scrape_rationale_175", "label": "Witids that failed for a retryable (non-permanent) reason.", "color": {"background": "#E15759", "border": "#E15759", "highlight": {"background": "#ffffff", "border": "#E15759"}}, "size": 11.1, "font": {"size": 0, "color": "#ffffff"}, "title": "Witids that failed for a retryable (non-permanent) reason.", "community": 2, "community_name": "Async Fetching & Retry", "source_file": "scrape.py", "file_type": "rationale", "degree": 1}, {"id": "scrape_rationale_259", "label": "Return (witids on this page, total_pages) from a list-page response.", "color": {"background": "#E15759", "border": "#E15759", "highlight": {"background": "#ffffff", "border": "#E15759"}}, "size": 11.1, "font": {"size": 0, "color": "#ffffff"}, "title": "Return (witids on this page, total_pages) from a list-page response.", "community": 2, "community_name": "Async Fetching & Retry", "source_file": "scrape.py", "file_type": "rationale", "degree": 1}, {"id": "scrape_rationale_303", "label": "GET with an outer retry+backoff on top of the session's own retries, so a\u2026", "color": {"background": "#E15759", "border": "#E15759", "highlight": {"background": "#ffffff", "border": "#E15759"}}, "size": 11.1, "font": {"size": 0, "color": "#ffffff"}, "title": "GET with an outer retry+backoff on top of the session&#x27;s own retries, so a\u2026", "community": 2, "community_name": "Async Fetching & Retry", "source_file": "scrape.py", "file_type": "rationale", "degree": 1}, {"id": "pkg_elec_scraping", "label": "elec-scraping", "color": {"background": "#9C755F", "border": "#9C755F", "highlight": {"background": "#ffffff", "border": "#9C755F"}}, "size": 10.0, "font": {"size": 0, "color": "#ffffff"}, "title": "elec-scraping", "community": 8, "community_name": "Project Root", "source_file": "pyproject.toml", "file_type": "code", "degree": 0}, {"id": "fixtures_detail_umm_detail_record", "label": "UMM detail record (planned outage)", "color": {"background": "#76B7B2", "border": "#76B7B2", "highlight": {"background": "#ffffff", "border": "#76B7B2"}}, "size": 15.6, "font": {"size": 12, "color": "#ffffff"}, "title": "UMM detail record (planned outage)", "community": 3, "community_name": "GPI UMM Data Model", "source_file": "fixtures/detail.html", "file_type": "concept", "degree": 5}, {"id": "fixtures_detail_unplanned_previous_umm", "label": "Previous UMM reference link", "color": {"background": "#76B7B2", "border": "#76B7B2", "highlight": {"background": "#ffffff", "border": "#76B7B2"}}, "size": 11.1, "font": {"size": 0, "color": "#ffffff"}, "title": "Previous UMM reference link", "community": 3, "community_name": "GPI UMM Data Model", "source_file": "fixtures/detail_unplanned.html", "file_type": "concept", "degree": 1}, {"id": "fixtures_detail_unplanned_umm_detail_record", "label": "UMM detail record (unplanned outage)", "color": {"background": "#76B7B2", "border": "#76B7B2", "highlight": {"background": "#ffffff", "border": "#76B7B2"}}, "size": 13.3, "font": {"size": 0, "color": "#ffffff"}, "title": "UMM detail record (unplanned outage)", "community": 3, "community_name": "GPI UMM Data Model", "source_file": "fixtures/detail_unplanned.html", "file_type": "concept", "degree": 3}, {"id": "fixtures_list_page_witlist", "label": "WIT list page (UMM listing)", "color": {"background": "#76B7B2", "border": "#76B7B2", "highlight": {"background": "#ffffff", "border": "#76B7B2"}}, "size": 13.3, "font": {"size": 0, "color": "#ffffff"}, "title": "WIT list page (UMM listing)", "community": 3, "community_name": "GPI UMM Data Model", "source_file": "fixtures/list_page.html", "file_type": "concept", "degree": 3}, {"id": "readme_gpi_tge", "label": "GPI TGE (source site)", "color": {"background": "#76B7B2", "border": "#76B7B2", "highlight": {"background": "#ffffff", "border": "#76B7B2"}}, "size": 11.1, "font": {"size": 0, "color": "#ffffff"}, "title": "GPI TGE (source site)", "community": 3, "community_name": "GPI UMM Data Model", "source_file": "README.md", "file_type": "concept", "degree": 1}, {"id": "readme_umm", "label": "Urgent Market Message (UMM)", "color": {"background": "#76B7B2", "border": "#76B7B2", "highlight": {"background": "#ffffff", "border": "#76B7B2"}}, "size": 13.3, "font": {"size": 0, "color": "#ffffff"}, "title": "Urgent Market Message (UMM)", "community": 3, "community_name": "GPI UMM Data Model", "source_file": "README.md", "file_type": "concept", "degree": 3}, {"id": "readme_umm_table", "label": "umm table", "color": {"background": "#76B7B2", "border": "#76B7B2", "highlight": {"background": "#ffffff", "border": "#76B7B2"}}, "size": 12.2, "font": {"size": 0, "color": "#ffffff"}, "title": "umm table", "community": 3, "community_name": "GPI UMM Data Model", "source_file": "README.md", "file_type": "concept", "degree": 2}, {"id": "readme_electricity_filter", "label": "Electricity filter (session-cookie POST)", "color": {"background": "#76B7B2", "border": "#76B7B2", "highlight": {"background": "#ffffff", "border": "#76B7B2"}}, "size": 11.1, "font": {"size": 0, "color": "#ffffff"}, "title": "Electricity filter (session-cookie POST)", "community": 3, "community_name": "GPI UMM Data Model", "source_file": "README.md", "file_type": "rationale", "degree": 1}, {"id": "readme_error_column", "label": "Per-row error column", "color": {"background": "#76B7B2", "border": "#76B7B2", "highlight": {"background": "#ffffff", "border": "#76B7B2"}}, "size": 11.1, "font": {"size": 0, "color": "#ffffff"}, "title": "Per-row error column", "community": 3, "community_name": "GPI UMM Data Model", "source_file": "README.md", "file_type": "rationale", "degree": 1}, {"id": "fixtures_list_page_pagination", "label": "List page pagination (Page N of M)", "color": {"background": "#59A14F", "border": "#59A14F", "highlight": {"background": "#ffffff", "border": "#59A14F"}}, "size": 12.2, "font": {"size": 0, "color": "#ffffff"}, "title": "List page pagination (Page N of M)", "community": 4, "community_name": "Crawl Modes & Pagination", "source_file": "fixtures/list_page.html", "file_type": "concept", "degree": 2}, {"id": "readme_meta_table", "label": "meta table", "color": {"background": "#59A14F", "border": "#59A14F", "highlight": {"background": "#ffffff", "border": "#59A14F"}}, "size": 12.2, "font": {"size": 0, "color": "#ffffff"}, "title": "meta table", "community": 4, "community_name": "Crawl Modes & Pagination", "source_file": "README.md", "file_type": "concept", "degree": 2}, {"id": "readme_backfill_mode", "label": "Backfill crawl mode", "color": {"background": "#59A14F", "border": "#59A14F", "highlight": {"background": "#ffffff", "border": "#59A14F"}}, "size": 12.2, "font": {"size": 0, "color": "#ffffff"}, "title": "Backfill crawl mode", "community": 4, "community_name": "Crawl Modes & Pagination", "source_file": "README.md", "file_type": "rationale", "degree": 2}, {"id": "readme_incremental_mode", "label": "Incremental crawl mode", "color": {"background": "#59A14F", "border": "#59A14F", "highlight": {"background": "#ffffff", "border": "#59A14F"}}, "size": 12.2, "font": {"size": 0, "color": "#ffffff"}, "title": "Incremental crawl mode", "community": 4, "community_name": "Crawl Modes & Pagination", "source_file": "README.md", "file_type": "rationale", "degree": 2}, {"id": "fixtures_detail_type_of_unavailability", "label": "Type of Unavailibility field", "color": {"background": "#EDC948", "border": "#EDC948", "highlight": {"background": "#ffffff", "border": "#EDC948"}}, "size": 11.1, "font": {"size": 0, "color": "#ffffff"}, "title": "Type of Unavailibility field", "community": 5, "community_name": "Field Label Normalization", "source_file": "fixtures/detail.html", "file_type": "concept", "degree": 1}, {"id": "readme_labels_mapping", "label": "LABELS field-name mapping", "color": {"background": "#EDC948", "border": "#EDC948", "highlight": {"background": "#ffffff", "border": "#EDC948"}}, "size": 11.1, "font": {"size": 0, "color": "#ffffff"}, "title": "LABELS field-name mapping", "community": 5, "community_name": "Field Label Normalization", "source_file": "README.md", "file_type": "rationale", "degree": 1}, {"id": "fixtures_list_page_witid", "label": "witid URL parameter", "color": {"background": "#B07AA1", "border": "#B07AA1", "highlight": {"background": "#ffffff", "border": "#B07AA1"}}, "size": 11.1, "font": {"size": 0, "color": "#ffffff"}, "title": "witid URL parameter", "community": 6, "community_name": "Witid Identifier", "source_file": "fixtures/list_page.html", "file_type": "concept", "degree": 1}, {"id": "readme_witid", "label": "witid (site internal id)", "color": {"background": "#B07AA1", "border": "#B07AA1", "highlight": {"background": "#ffffff", "border": "#B07AA1"}}, "size": 11.1, "font": {"size": 0, "color": "#ffffff"}, "title": "witid (site internal id)", "community": 6, "community_name": "Witid Identifier", "source_file": "README.md", "file_type": "concept", "degree": 1}, {"id": "readme_request_delay", "label": "Request delay / retry-with-backoff", "color": {"background": "#BAB0AC", "border": "#BAB0AC", "highlight": {"background": "#ffffff", "border": "#BAB0AC"}}, "size": 10.0, "font": {"size": 0, "color": "#ffffff"}, "title": "Request delay / retry-with-backoff", "community": 9, "community_name": "Request Delay / Backoff", "source_file": "README.md", "file_type": "rationale", "degree": 0}];
+const RAW_EDGES = [{"from": "scrape_classify_record", "to": "scrape_commit_chunk", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_classify_record", "to": "test_scrape_test_classify_record_routes_by_year", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_classify_record", "to": "test_scrape_test_classify_record_routes_other_and_unknown", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_classify_record", "to": "test_scrape", "label": "imports", "title": "imports [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_classify_record", "to": "scrape", "label": "contains", "title": "contains [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_classify_record", "to": "scrape_rationale_138", "label": "rationale_for", "title": "rationale_for [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_clean", "to": "scrape_parse_detail", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_clean", "to": "scrape", "label": "contains", "title": "contains [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_ensure_table", "to": "scrape_commit_chunk", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_ensure_table", "to": "test_scrape_test_ensure_table_rejects_bad_year", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_ensure_table", "to": "test_scrape", "label": "imports", "title": "imports [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_ensure_table", "to": "connection", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_ensure_table", "to": "scrape", "label": "contains", "title": "contains [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_ensure_table", "to": "scrape_rationale_148", "label": "rationale_for", "title": "rationale_for [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_parse_detail", "to": "scrape_label_to_key", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_parse_detail", "to": "scrape_scrape_detail", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_parse_detail", "to": "test_scrape_test_classify_record_routes_by_year", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_parse_detail", "to": "test_scrape_test_parse_detail", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_parse_detail", "to": "test_scrape", "label": "imports", "title": "imports [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_parse_detail", "to": "scrape", "label": "contains", "title": "contains [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "test_scrape_load", "to": "selector", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "test_scrape_load", "to": "test_scrape_test_classify_record_routes_by_year", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "test_scrape_load", "to": "test_scrape_test_parse_detail", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "test_scrape_load", "to": "test_scrape_test_parse_list", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "test_scrape_load", "to": "test_scrape", "label": "contains", "title": "contains [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "test_scrape_test_classify_record_routes_by_year", "to": "test_scrape", "label": "contains", "title": "contains [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "test_scrape_test_classify_record_routes_other_and_unknown", "to": "test_scrape", "label": "contains", "title": "contains [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "test_scrape_test_ensure_table_rejects_bad_year", "to": "test_scrape", "label": "contains", "title": "contains [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "test_scrape_test_parse_detail", "to": "test_scrape", "label": "contains", "title": "contains [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "test_scrape_test_parse_list", "to": "scrape_parse_list", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "test_scrape_test_parse_list", "to": "test_scrape", "label": "contains", "title": "contains [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "test_scrape_test_urls_use_lifecycle_0", "to": "test_scrape", "label": "contains", "title": "contains [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_all_record_tables", "to": "scrape_export", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_all_record_tables", "to": "scrape_known_witids", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_all_record_tables", "to": "scrape_refresh_umm_view", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_all_record_tables", "to": "connection", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_all_record_tables", "to": "scrape", "label": "contains", "title": "contains [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_commit_chunk", "to": "scrape_refresh_umm_view", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_commit_chunk", "to": "scrape_set_meta", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_commit_chunk", "to": "scrape_crawl", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_commit_chunk", "to": "scrape_retry_failed", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_commit_chunk", "to": "connection", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_commit_chunk", "to": "datetime", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_commit_chunk", "to": "scrape", "label": "contains", "title": "contains [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_commit_chunk", "to": "scrape_rationale_193", "label": "rationale_for", "title": "rationale_for [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_crawl", "to": "scrape_known_witids", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_crawl", "to": "scrape_retry_failed", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_crawl", "to": "scrape_get_meta", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_crawl", "to": "scrape_gather_list_pages", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_crawl", "to": "scrape_set_meta", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_crawl", "to": "scrape_gather_details", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_crawl", "to": "scrape_main", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_crawl", "to": "connection", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_crawl", "to": "scrape", "label": "contains", "title": "contains [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_export", "to": "scrape_main", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_export", "to": "connection", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_export", "to": "scrape", "label": "contains", "title": "contains [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_get_meta", "to": "connection", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_get_meta", "to": "scrape", "label": "contains", "title": "contains [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_handle_signal", "to": "scrape", "label": "contains", "title": "contains [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_handle_signal", "to": "scrape_main", "label": "indirect_call", "title": "indirect_call [INFERRED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "INFERRED"}, {"from": "scrape_known_witids", "to": "connection", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_known_witids", "to": "scrape", "label": "contains", "title": "contains [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_main", "to": "scrape_open_db", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_main", "to": "scrape", "label": "contains", "title": "contains [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_open_db", "to": "connection", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_open_db", "to": "scrape", "label": "contains", "title": "contains [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_refresh_umm_view", "to": "connection", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_refresh_umm_view", "to": "scrape", "label": "contains", "title": "contains [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_set_meta", "to": "connection", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_set_meta", "to": "scrape", "label": "contains", "title": "contains [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_failed_retry_ids", "to": "scrape_retry_failed", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_failed_retry_ids", "to": "connection", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_failed_retry_ids", "to": "scrape", "label": "contains", "title": "contains [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_failed_retry_ids", "to": "scrape_rationale_175", "label": "rationale_for", "title": "rationale_for [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_fetch", "to": "scrape_fetch_list_page", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_fetch", "to": "scrape_scrape_detail", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_fetch", "to": "scrape", "label": "contains", "title": "contains [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_fetch", "to": "scrape_rationale_303", "label": "rationale_for", "title": "rationale_for [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_fetch_list_page", "to": "scrape_gather_list_pages", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_fetch_list_page", "to": "semaphore", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_fetch_list_page", "to": "scrape", "label": "contains", "title": "contains [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_gather_details", "to": "scrape_scrape_detail", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_gather_details", "to": "scrape_retry_failed", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_gather_details", "to": "semaphore", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_gather_details", "to": "scrape", "label": "contains", "title": "contains [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_gather_list_pages", "to": "scrape_parse_list", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_gather_list_pages", "to": "semaphore", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_gather_list_pages", "to": "scrape", "label": "contains", "title": "contains [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_parse_list", "to": "test_scrape", "label": "imports", "title": "imports [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_parse_list", "to": "scrape", "label": "contains", "title": "contains [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_parse_list", "to": "scrape_rationale_259", "label": "rationale_for", "title": "rationale_for [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_retry_failed", "to": "connection", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_retry_failed", "to": "semaphore", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_retry_failed", "to": "scrape", "label": "contains", "title": "contains [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_scrape_detail", "to": "semaphore", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_scrape_detail", "to": "scrape", "label": "contains", "title": "contains [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_label_to_key", "to": "scrape_slugify", "label": "calls", "title": "calls [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_label_to_key", "to": "scrape", "label": "contains", "title": "contains [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "scrape_slugify", "to": "scrape", "label": "contains", "title": "contains [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "test_scrape", "to": "scrape", "label": "imports_from", "title": "imports_from [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "test_scrape", "to": "test_scrape_rationale_1", "label": "rationale_for", "title": "rationale_for [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "datetime", "to": "scrape", "label": "imports_from", "title": "imports_from [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "fixtures_detail_umm_detail_record", "to": "fixtures_list_page_witlist", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "fixtures_detail_umm_detail_record", "to": "readme_gpi_tge", "label": "conceptually_related_to", "title": "conceptually_related_to [INFERRED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "INFERRED"}, {"from": "fixtures_detail_umm_detail_record", "to": "readme_umm", "label": "conceptually_related_to", "title": "conceptually_related_to [INFERRED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "INFERRED"}, {"from": "fixtures_detail_umm_detail_record", "to": "fixtures_detail_unplanned_umm_detail_record", "label": "shares_data_with", "title": "shares_data_with [INFERRED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "INFERRED"}, {"from": "fixtures_detail_umm_detail_record", "to": "readme_umm_table", "label": "shares_data_with", "title": "shares_data_with [INFERRED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "INFERRED"}, {"from": "fixtures_detail_unplanned_previous_umm", "to": "readme_umm", "label": "conceptually_related_to", "title": "conceptually_related_to [INFERRED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "INFERRED"}, {"from": "fixtures_detail_unplanned_umm_detail_record", "to": "fixtures_list_page_witlist", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "fixtures_detail_unplanned_umm_detail_record", "to": "readme_umm", "label": "conceptually_related_to", "title": "conceptually_related_to [INFERRED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "INFERRED"}, {"from": "fixtures_list_page_witlist", "to": "readme_electricity_filter", "label": "references", "title": "references [INFERRED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "INFERRED"}, {"from": "readme_umm_table", "to": "readme_error_column", "label": "shares_data_with", "title": "shares_data_with [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "fixtures_list_page_pagination", "to": "readme_incremental_mode", "label": "conceptually_related_to", "title": "conceptually_related_to [INFERRED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "INFERRED"}, {"from": "fixtures_list_page_pagination", "to": "readme_backfill_mode", "label": "shares_data_with", "title": "shares_data_with [INFERRED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "INFERRED"}, {"from": "readme_meta_table", "to": "readme_backfill_mode", "label": "shares_data_with", "title": "shares_data_with [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "readme_meta_table", "to": "readme_incremental_mode", "label": "shares_data_with", "title": "shares_data_with [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "fixtures_detail_type_of_unavailability", "to": "readme_labels_mapping", "label": "shares_data_with", "title": "shares_data_with [INFERRED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "INFERRED"}, {"from": "fixtures_list_page_witid", "to": "readme_witid", "label": "shares_data_with", "title": "shares_data_with [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}];
+const LEGEND = [{"cid": 0, "color": "#4E79A7", "label": "Parsing &amp; Table Routing", "count": 16}, {"cid": 1, "color": "#F28E2B", "label": "Database &amp; Crawl Orchestration", "count": 15}, {"cid": 2, "color": "#E15759", "label": "Async Fetching &amp; Retry", "count": 12}, {"cid": 3, "color": "#76B7B2", "label": "GPI UMM Data Model", "count": 9}, {"cid": 4, "color": "#59A14F", "label": "Crawl Modes &amp; Pagination", "count": 4}, {"cid": 5, "color": "#EDC948", "label": "Field Label Normalization", "count": 2}, {"cid": 6, "color": "#B07AA1", "label": "Witid Identifier", "count": 2}, {"cid": 7, "color": "#FF9DA7", "label": "Slug/Key Helpers", "count": 2}, {"cid": 8, "color": "#9C755F", "label": "Project Root", "count": 1}, {"cid": 9, "color": "#BAB0AC", "label": "Request Delay / Backoff", "count": 1}];
+
+// HTML-escape helper — prevents XSS when injecting graph data into innerHTML
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// Build vis datasets
+const nodesDS = new vis.DataSet(RAW_NODES.map(n => ({
+  id: n.id, label: n.label, color: n.color, size: n.size,
+  font: n.font, title: n.title,
+  _community: n.community, _community_name: n.community_name,
+  _source_file: n.source_file, _file_type: n.file_type, _degree: n.degree,
+})));
+
+const edgesDS = new vis.DataSet(RAW_EDGES.map((e, i) => ({
+  id: i, from: e.from, to: e.to,
+  label: '',
+  title: e.title,
+  dashes: e.dashes,
+  width: e.width,
+  color: e.color,
+  arrows: { to: { enabled: true, scaleFactor: 0.5 } },
+})));
+
+const container = document.getElementById('graph');
+const network = new vis.Network(container, { nodes: nodesDS, edges: edgesDS }, {
+  physics: {
+    enabled: true,
+    solver: 'forceAtlas2Based',
+    forceAtlas2Based: {
+      gravitationalConstant: -60,
+      centralGravity: 0.005,
+      springLength: 120,
+      springConstant: 0.08,
+      damping: 0.4,
+      avoidOverlap: 0.8,
+    },
+    stabilization: { iterations: 200, fit: true },
+  },
+  interaction: {
+    hover: true,
+    tooltipDelay: 100,
+    hideEdgesOnDrag: true,
+    navigationButtons: false,
+    keyboard: false,
+  },
+  nodes: { shape: 'dot', borderWidth: 1.5 },
+  edges: { smooth: { type: 'continuous', roundness: 0.2 }, selectionWidth: 3 },
+});
+
+network.once('stabilizationIterationsDone', () => {
+  network.setOptions({ physics: { enabled: false } });
+});
+
+function showInfo(nodeId) {
+  const n = nodesDS.get(nodeId);
+  if (!n) return;
+  const neighborIds = network.getConnectedNodes(nodeId);
+  const neighborItems = neighborIds.map(nid => {
+    const nb = nodesDS.get(nid);
+    const color = nb ? nb.color.background : '#555';
+    return `<span class="neighbor-link" style="border-left-color:${esc(color)}" data-nid="${esc(nid)}">${esc(nb ? nb.label : nid)}</span>`;
+  }).join('');
+  document.getElementById('info-content').innerHTML = `
+    <div class="field"><b>${esc(n.label)}</b></div>
+    <div class="field">Type: ${esc(n._file_type || 'unknown')}</div>
+    <div class="field">Community: ${esc(n._community_name)}</div>
+    <div class="field">Source: ${esc(n._source_file || '-')}</div>
+    <div class="field">Degree: ${n._degree}</div>
+    ${neighborIds.length ? `<div class="field" style="margin-top:8px;color:#aaa;font-size:11px">Neighbors (${neighborIds.length})</div><div id="neighbors-list">${neighborItems}</div>` : ''}
+  `;
+}
+
+function focusNode(nodeId) {
+  network.focus(nodeId, { scale: 1.4, animation: true });
+  network.selectNodes([nodeId]);
+  showInfo(nodeId);
+}
+
+// Neighbor links use a data attribute + one delegated listener rather than an
+// inline onclick. A node id/label sourced from a document or a scraped URL
+// (graphify add) can contain a double-quote; dropping the stringified id
+// unescaped into a quoted onclick both broke every link and allowed a hostile
+// source to inject an event handler into the local report (stored XSS, #1838).
+// esc() on data-nid keeps the value inside the attribute; the listener reads it
+// back verbatim. Bound to document so it survives the innerHTML rebuild that
+// recreates #neighbors-list on each showInfo().
+document.addEventListener('click', e => {
+  const el = e.target.closest('.neighbor-link');
+  if (el && el.dataset.nid !== undefined) focusNode(el.dataset.nid);
+});
+
+// Track hovered node — hover detection is more reliable than click params
+let hoveredNodeId = null;
+network.on('hoverNode', params => {
+  hoveredNodeId = params.node;
+  container.style.cursor = 'pointer';
+});
+network.on('blurNode', () => {
+  hoveredNodeId = null;
+  container.style.cursor = 'default';
+});
+container.addEventListener('click', () => {
+  if (hoveredNodeId !== null) {
+    showInfo(hoveredNodeId);
+    network.selectNodes([hoveredNodeId]);
+  }
+});
+network.on('click', params => {
+  if (params.nodes.length > 0) {
+    showInfo(params.nodes[0]);
+  } else if (hoveredNodeId === null) {
+    document.getElementById('info-content').innerHTML = '<span class="empty">Click a node to inspect it</span>';
+  }
+});
+
+const searchInput = document.getElementById('search');
+const searchResults = document.getElementById('search-results');
+searchInput.addEventListener('input', () => {
+  const q = searchInput.value.toLowerCase().trim();
+  searchResults.innerHTML = '';
+  if (!q) { searchResults.style.display = 'none'; return; }
+  const matches = RAW_NODES.filter(n => n.label.toLowerCase().includes(q)).slice(0, 20);
+  if (!matches.length) { searchResults.style.display = 'none'; return; }
+  searchResults.style.display = 'block';
+  matches.forEach(n => {
+    const el = document.createElement('div');
+    el.className = 'search-item';
+    el.textContent = n.label;
+    el.style.borderLeft = `3px solid ${n.color.background}`;
+    el.style.paddingLeft = '8px';
+    el.onclick = () => {
+      network.focus(n.id, { scale: 1.5, animation: true });
+      network.selectNodes([n.id]);
+      showInfo(n.id);
+      searchResults.style.display = 'none';
+      searchInput.value = '';
+    };
+    searchResults.appendChild(el);
+  });
+});
+document.addEventListener('click', e => {
+  if (!searchResults.contains(e.target) && e.target !== searchInput)
+    searchResults.style.display = 'none';
+});
+
+const hiddenCommunities = new Set();
+
+const selectAllCb = document.getElementById('select-all-cb');
+
+function updateSelectAllState() {
+  const total = LEGEND.length;
+  const hidden = hiddenCommunities.size;
+  selectAllCb.checked = hidden === 0;
+  selectAllCb.indeterminate = hidden > 0 && hidden < total;
+}
+
+function toggleAllCommunities(hide) {
+  document.querySelectorAll('.legend-item').forEach(item => {
+    hide ? item.classList.add('dimmed') : item.classList.remove('dimmed');
+  });
+  document.querySelectorAll('.legend-cb').forEach(cb => {
+    cb.checked = !hide;
+  });
+  LEGEND.forEach(c => {
+    if (hide) hiddenCommunities.add(c.cid); else hiddenCommunities.delete(c.cid);
+  });
+  const updates = RAW_NODES.map(n => ({ id: n.id, hidden: hide }));
+  nodesDS.update(updates);
+  updateSelectAllState();
+}
+
+const legendEl = document.getElementById('legend');
+LEGEND.forEach(c => {
+  const item = document.createElement('div');
+  item.className = 'legend-item';
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.className = 'legend-cb';
+  cb.checked = true;
+  cb.addEventListener('change', (e) => {
+    e.stopPropagation();
+    if (cb.checked) {
+      hiddenCommunities.delete(c.cid);
+      item.classList.remove('dimmed');
+    } else {
+      hiddenCommunities.add(c.cid);
+      item.classList.add('dimmed');
+    }
+    const updates = RAW_NODES
+      .filter(n => n.community === c.cid)
+      .map(n => ({ id: n.id, hidden: !cb.checked }));
+    nodesDS.update(updates);
+    updateSelectAllState();
+  });
+  item.innerHTML = `<div class="legend-dot" style="background:${c.color}"></div>
+    <span class="legend-label">${c.label}</span>
+    <span class="legend-count">${c.count}</span>`;
+  item.prepend(cb);
+  item.onclick = (e) => {
+    if (e.target === cb) return;
+    cb.checked = !cb.checked;
+    cb.dispatchEvent(new Event('change'));
+  };
+  legendEl.appendChild(item);
+});
+</script>
+<script>
+// Render hyperedges as shaded regions
+const hyperedges = [{"id": "crawl_flow_backfill_incremental", "label": "Backfill/incremental crawl flow via witid and pagination", "nodes": ["readme_backfill_mode", "readme_incremental_mode", "fixtures_list_page_pagination", "readme_witid"], "relation": "form", "confidence": "INFERRED", "confidence_score": 0.85, "source_file": "README.md"}, {"id": "umm_record_schema_touchpoints", "label": "UMM record schema across scraper touchpoints", "nodes": ["fixtures_detail_umm_detail_record", "fixtures_detail_unplanned_umm_detail_record", "fixtures_list_page_witlist", "readme_umm_table"], "relation": "participate_in", "confidence": "INFERRED", "confidence_score": 0.85, "source_file": "README.md"}];
+// afterDrawing passes ctx already transformed to network coordinate space.
+// Draw node positions raw — no manual pan/zoom/DPR math needed.
+
+// Andrew's monotone chain. Returns the hull in counter-clockwise order, which
+// is what the perimeter must be traced in. Collinear and duplicate points
+// collapse to the extremes, so degenerate member sets render as a segment
+// rather than a zero-area crossed path.
+function convexHull(pts) {
+    const p = pts.slice().sort((a, b) => (a.x - b.x) || (a.y - b.y));
+    if (p.length < 3) return p;
+    const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+    const build = seq => {
+        const out = [];
+        for (const q of seq) {
+            while (out.length >= 2 && cross(out[out.length - 2], out[out.length - 1], q) <= 0) out.pop();
+            out.push(q);
+        }
+        out.pop();
+        return out;
+    };
+    const hull = build(p).concat(build(p.slice().reverse()));
+    return hull.length >= 3 ? hull : p;
+}
+network.on('afterDrawing', function(ctx) {
+    hyperedges.forEach(h => {
+        const positions = h.nodes
+            .map(nid => network.getPositions([nid])[nid])
+            .filter(p => p !== undefined);
+        if (positions.length < 2) return;
+        ctx.save();
+        ctx.globalAlpha = 0.12;
+        ctx.fillStyle = '#6366f1';
+        ctx.strokeStyle = '#6366f1';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        // Centroid and expanded hull in network coordinates.
+        // The perimeter must follow hull order, not h.nodes order: tracing the
+        // raw member order self-intersects whenever the layout does not happen
+        // to place members in angular order, filling as crossed wedges.
+        const cx = positions.reduce((s, p) => s + p.x, 0) / positions.length;
+        const cy = positions.reduce((s, p) => s + p.y, 0) / positions.length;
+        const hull = convexHull(positions);
+        const expanded = hull.map(p => ({
+            x: cx + (p.x - cx) * 1.15,
+            y: cy + (p.y - cy) * 1.15
+        }));
+        ctx.moveTo(expanded[0].x, expanded[0].y);
+        expanded.slice(1).forEach(p => ctx.lineTo(p.x, p.y));
+        ctx.closePath();
+        ctx.fill();
+        ctx.globalAlpha = 0.4;
+        ctx.stroke();
+        // Label
+        ctx.globalAlpha = 0.8;
+        ctx.fillStyle = '#4f46e5';
+        ctx.font = 'bold 11px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(h.label, cx, cy - 5);
+        ctx.restore();
+    });
+});
+</script>
+</body>
+</html>
