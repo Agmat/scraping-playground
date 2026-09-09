@@ -1,5 +1,15 @@
 .venv/
 umm.sqlite
+umm.sqlite-shm
+umm.sqlite-wal
 umm.json
+scrape_*.log
+old_runs/
 __pycache__/
 *.pyc
+
+# graphify: machine-local state and regenerable extraction cache -
+# graph.html/graph.json/GRAPH_REPORT.md/manifest.json/cost.json are tracked.
+graphify-out/.graphify_python
+graphify-out/.graphify_root
+graphify-out/cache/
