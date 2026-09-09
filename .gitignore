@@ -1,0 +1,5 @@
+.venv/
+umm.sqlite
+umm.json
+__pycache__/
+*.pyc
